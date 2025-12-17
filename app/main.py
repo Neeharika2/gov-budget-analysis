@@ -50,6 +50,7 @@ class QueryFilters(BaseModel):
     scheme: Optional[str] = Field(None, description="Scheme name")
     top_k: Optional[int] = Field(10, ge=1, le=15, description="Maximum number of chunks to retrieve (adaptive retrieval may use fewer)")
     adaptive: Optional[bool] = Field(True, description="Enable adaptive retrieval based on query complexity")
+    hybrid: Optional[bool] = Field(True, description="Enable hybrid retrieval (dense + BM25 keyword search)")
 
 
 class QueryRequest(BaseModel):
@@ -175,12 +176,13 @@ async def query_documents(request: QueryRequest):
         # Extract filters
         filters = request.filters or QueryFilters()
         
-        # Execute RAG query with adaptive retrieval
+        # Execute RAG query with adaptive and hybrid retrieval
         print(f"[DEBUG] Executing query: {request.query}")
         result = complete_query(
             query=request.query,
             top_k=filters.top_k or 10,
             adaptive=filters.adaptive if filters.adaptive is not None else True,
+            hybrid=filters.hybrid if filters.hybrid is not None else True,
             year=filters.year,
             ministry=filters.ministry,
             scheme=filters.scheme,

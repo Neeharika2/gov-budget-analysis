@@ -405,6 +405,7 @@ class RAGPipeline:
         self.pdf_processor = None
         self.vector_store = None
         self.embedding_generator = None
+        self.bm25_index = None  # For hybrid retrieval (lazy loaded)
     
     def index_documents(
         self,
@@ -519,6 +520,20 @@ class RAGPipeline:
         
         print("Stored in ChromaDB")
         
+        # Step 6: Build BM25 index for hybrid retrieval
+        print(f"\n[6/6] Building BM25 index for keyword search...")
+        try:
+            from app.bm25_index import BM25Index
+            from pathlib import Path
+            
+            self.bm25_index = BM25Index(all_chunks)
+            bm25_path = Path(self.vectorstore_directory) / "bm25_index.pkl"
+            self.bm25_index.save(str(bm25_path))
+            print(f"✓ BM25 index saved to: {bm25_path}")
+        except Exception as e:
+            print(f"⚠️  Failed to build BM25 index: {e}")
+            print("   Hybrid retrieval will not be available")
+        
         # Print final statistics
         print("\n" + "=" * 60)
         print("Indexing complete.")
@@ -529,25 +544,74 @@ class RAGPipeline:
         print(f"Persist directory: {stats['persist_directory']}")
         print("=" * 60)
     
+    def _merge_hybrid_results(
+        self,
+        dense_chunks: List[Dict],
+        sparse_chunks: List[Dict]
+    ) -> List[Dict]:
+        """
+        Merge dense (ANN) and sparse (BM25) retrieval results.
+        
+        Uses union-based merging with deduplication:
+        1. Prioritize dense results (better semantic match)
+        2. Add BM25 results that weren't in dense set
+        3. Deduplicate by chunk ID
+        
+        Args:
+            dense_chunks: Results from dense vector search
+            sparse_chunks: Results from BM25 keyword search
+            
+        Returns:
+            Merged and deduplicated list of chunks
+        """
+        seen_ids = set()
+        merged = []
+        
+        # Prioritize dense results (better semantic understanding)
+        for chunk in dense_chunks:
+            chunk_id = chunk.get('metadata', {}).get('id') or chunk.get('id', '')
+            if not chunk_id:
+                # Fallback to text hash if no ID
+                chunk_id = hash(chunk.get('text', '')[:100])
+            
+            if chunk_id not in seen_ids:
+                merged.append(chunk)
+                seen_ids.add(chunk_id)
+        
+        # Add BM25 results not already in dense set
+        for chunk in sparse_chunks:
+            chunk_id = chunk.get('metadata', {}).get('id') or chunk.get('id', '')
+            if not chunk_id:
+                chunk_id = hash(chunk.get('text', '')[:100])
+            
+            if chunk_id not in seen_ids:
+                # Mark as BM25-only result
+                chunk['retrieval_source'] = 'bm25'
+                merged.append(chunk)
+                seen_ids.add(chunk_id)
+        
+        return merged
+    
     def query_documents(
         self,
         query: str,
         top_k: int = 10,
         adaptive: bool = True,
+        hybrid: bool = True,
         year_filter: Optional[str] = None,
         ministry_filter: Optional[str] = None,
         scheme_filter: Optional[str] = None
     ) -> List[Dict]:
         """
-        Query the vector store for relevant documents with adaptive retrieval.
+        Query the vector store for relevant documents with adaptive and hybrid retrieval.
         
-        Uses 2-stage retrieval with optional adaptive top_k:
-        - Stage 1: Fast ANN recall (top 25 candidates, no LLM)
+        Uses 2-stage retrieval with optional adaptive top_k and hybrid search:
+        - Stage 0 (if hybrid): BM25 keyword search + Dense ANN search → Merge
+        - Stage 1: Fast ANN recall (or merged results from hybrid)
         - Stage 2: Rerank + compress to adaptive top_k for answer generation
         
-        Adaptive retrieval dynamically adjusts the number of chunks based on
-        query complexity, improving latency for simple queries and providing
-        more context for complex analysis queries.
+        Hybrid retrieval combines dense embeddings with sparse BM25 for better recall
+        on acronyms, scheme names, and exact matches common in government documents.
         
         Args:
             query: User query string
@@ -555,6 +619,8 @@ class RAGPipeline:
                    This serves as an upper limit when adaptive=True
             adaptive: Enable adaptive retrieval based on query complexity (default: True)
                      If False, uses exact top_k value
+            hybrid: Enable hybrid retrieval (dense + BM25) (default: True)
+                   If False, uses dense-only retrieval
             year_filter: Optional filter by year (e.g., "2023-24")
             ministry_filter: Optional filter by ministry name
             scheme_filter: Optional filter by scheme name
@@ -596,10 +662,28 @@ class RAGPipeline:
             adapted_top_k = top_k
             print(f"Static Retrieval: {top_k} chunks (adaptive disabled)")
         
+        # Load BM25 index for hybrid retrieval if enabled
+        if hybrid and self.bm25_index is None:
+            from pathlib import Path
+            bm25_path = Path(self.vectorstore_directory) / "bm25_index.pkl"
+            if bm25_path.exists():
+                try:
+                    from app.bm25_index import BM25Index
+                    self.bm25_index = BM25Index.load(str(bm25_path))
+                    print("✓ Loaded BM25 index for hybrid retrieval")
+                except Exception as e:
+                    print(f"⚠️  Failed to load BM25 index: {e}")
+                    hybrid = False
+            else:
+                print("⚠️  BM25 index not found, falling back to dense-only retrieval")
+                print(f"   Expected location: {bm25_path}")
+                print("   Run indexing to build BM25: python app/rag_pipeline.py --index")
+                hybrid = False
+        
         # Preprocess query for better matching
         processed_query = preprocess_query(query, year_filter)
         
-        # Generate query embedding
+        # Generate query embedding (needed for dense retrieval)
         print(f"Generating query embedding for: '{processed_query}'")
         query_embedding = self.embedding_generator.get_query_embedding(processed_query)
         
@@ -622,54 +706,115 @@ class RAGPipeline:
             else:
                 where_filter["scheme"] = scheme_filter
         
-        # Stage 1: Fast recall - retrieve more candidates for reranking
-        # Using 25 candidates is optimal: fast ANN lookup, then rerank to adapted_top_k
-        retrieval_count = 25
-        print(f"Stage 1: Fast recall - retrieving {retrieval_count} candidates...")
+        # =========================================================================
+        # HYBRID RETRIEVAL: Dense (ANN) + Sparse (BM25)
+        # =========================================================================
         
-        query_params = {
-            "query_embeddings": [query_embedding],
-            "n_results": retrieval_count
-        }
-        
-        # Add where filter if any filters are specified
-        if where_filter:
-            query_params["where"] = where_filter
-            print(f"Applying filters: {where_filter}")
-        
-        results = self.vector_store.collection.query(**query_params)
-        
-        
-        # Format results with relevance filtering
-        retrieved_chunks = []
-        
-        # CRITICAL: Filter by relevance threshold to exclude irrelevant chunks
-        # Lower distance = more similar (cosine distance)
-        RELEVANCE_THRESHOLD = 1.2  # Only include chunks with distance <= 1.2
-        
-        if results and results['documents'] and results['documents'][0]:
-            total_retrieved = len(results['documents'][0])
+        if hybrid and self.bm25_index is not None:
+            print("\n🔍 Hybrid Retrieval: Combining Dense (ANN) + Sparse (BM25)")
             
-            for i in range(total_retrieved):
-                # Ensure metadata is always a dict, never None
-                metadata = results['metadatas'][0][i] if (results.get('metadatas') and results['metadatas'][0] and i < len(results['metadatas'][0])) else {}
-                if metadata is None:
-                    metadata = {}
-                
-                distance = results['distances'][0][i] if (results.get('distances') and results['distances'][0] and i < len(results['distances'][0])) else 0.0
-                
-                # Filter by relevance threshold
-                if distance <= RELEVANCE_THRESHOLD:
-                    chunk = {
-                        'text': results['documents'][0][i] if results['documents'][0][i] else '',
-                        'metadata': metadata,
-                        'distance': distance
-                    }
-                    retrieved_chunks.append(chunk)
-             
-            print(f"  Stage 1 complete: {len(retrieved_chunks)} chunks passed relevance filter (threshold: {RELEVANCE_THRESHOLD})")
+            # Stage 0a: Dense retrieval via ChromaDB
+            retrieval_count_per_method = 15  # Get 15 from each method
+            print(f"  [Dense] Retrieving {retrieval_count_per_method} candidates via vector search...")
+            
+            query_params = {
+                "query_embeddings": [query_embedding],
+                "n_results": retrieval_count_per_method
+            }
+            
+            if where_filter:
+                query_params["where"] = where_filter
+            
+            dense_results = self.vector_store.collection.query(**query_params)
+            
+            # Format dense results
+            dense_chunks = []
+            RELEVANCE_THRESHOLD = 1.2
+            
+            if dense_results and dense_results['documents'] and dense_results['documents'][0]:
+                for i in range(len(dense_results['documents'][0])):
+                    metadata = dense_results['metadatas'][0][i] if (dense_results.get('metadatas') and dense_results['metadatas'][0]) else {}
+                    if metadata is None:
+                        metadata = {}
+                    
+                    distance = dense_results['distances'][0][i] if (dense_results.get('distances') and dense_results['distances'][0]) else 0.0
+                    
+                    if distance <= RELEVANCE_THRESHOLD:
+                        chunk = {
+                            'text': dense_results['documents'][0][i] if dense_results['documents'][0][i] else '',
+                            'metadata': metadata,
+                            'distance': distance,
+                            'retrieval_source': 'dense'
+                        }
+                        dense_chunks.append(chunk)
+            
+            print(f"  [Dense] Retrieved {len(dense_chunks)} relevant chunks")
+            
+            # Stage 0b: Sparse retrieval via BM25
+            print(f"  [Sparse] Retrieving {retrieval_count_per_method} candidates via BM25 keyword search...")
+            sparse_chunks = self.bm25_index.search(
+                query=query,
+                top_k=retrieval_count_per_method,
+                year_filter=where_filter.get('year'),
+                ministry_filter=where_filter.get('ministry'),
+                scheme_filter=where_filter.get('scheme')
+            )
+            print(f"  [Sparse] Retrieved {len(sparse_chunks)} keyword-matched chunks")
+            
+            # Merge results
+            retrieved_chunks = self._merge_hybrid_results(dense_chunks, sparse_chunks)
+            
+            # Count sources
+            dense_only = sum(1 for c in retrieved_chunks if c.get('retrieval_source') == 'dense')
+            bm25_only = sum(1 for c in retrieved_chunks if c.get('retrieval_source') == 'bm25')
+            
+            print(f"  [Merged] {len(retrieved_chunks)} total chunks ({dense_only} dense + {bm25_only} BM25-only)")
+        
         else:
-            print("No results returned from vector store query")
+            # Fallback to dense-only retrieval
+            if hybrid:
+                print("\n🔍 Dense-only Retrieval (BM25 not available)")
+            
+            retrieval_count = 25
+            print(f"Stage 1: Fast recall - retrieving {retrieval_count} candidates...")
+            
+            query_params = {
+                "query_embeddings": [query_embedding],
+                "n_results": retrieval_count
+            }
+            
+            # Add where filter if any filters are specified
+            if where_filter:
+                query_params["where"] = where_filter
+                print(f"Applying filters: {where_filter}")
+            
+            results = self.vector_store.collection.query(**query_params)
+            
+            # Format results with relevance filtering
+            retrieved_chunks = []
+            RELEVANCE_THRESHOLD = 1.2
+            
+            if results and results['documents'] and results['documents'][0]:
+                total_retrieved = len(results['documents'][0])
+                
+                for i in range(total_retrieved):
+                    metadata = results['metadatas'][0][i] if (results.get('metadatas') and results['metadatas'][0] and i < len(results['metadatas'][0])) else {}
+                    if metadata is None:
+                        metadata = {}
+                    
+                    distance = results['distances'][0][i] if (results.get('distances') and results['distances'][0] and i < len(results['distances'][0])) else 0.0
+                    
+                    if distance <= RELEVANCE_THRESHOLD:
+                        chunk = {
+                            'text': results['documents'][0][i] if results['documents'][0][i] else '',
+                            'metadata': metadata,
+                            'distance': distance
+                        }
+                        retrieved_chunks.append(chunk)
+                 
+                print(f"  Stage 1 complete: {len(retrieved_chunks)} chunks passed relevance filter (threshold: {RELEVANCE_THRESHOLD})")
+            else:
+                print("No results returned from vector store query")
         
         if not retrieved_chunks:
             print("No relevant chunks found.")
@@ -955,6 +1100,7 @@ def complete_query(
     query: str,
     top_k: int = 10,
     adaptive: bool = True,
+    hybrid: bool = True,
     year: Optional[str] = None,
     ministry: Optional[str] = None,
     scheme: Optional[str] = None,
@@ -963,12 +1109,13 @@ def complete_query(
     temperature: float = 0.1
 ) -> Dict:
     """
-    Complete RAG query: retrieve chunks and generate answer with adaptive retrieval.
+    Complete RAG query: retrieve chunks and generate answer with adaptive and hybrid retrieval.
     
     Args:
         query: User query string
         top_k: Maximum number of chunks to retrieve (default: 10)
         adaptive: Enable adaptive retrieval based on query complexity (default: True)
+        hybrid: Enable hybrid retrieval combining dense + BM25 (default: True)
         year: Optional filter by year
         ministry: Optional filter by ministry
         scheme: Optional filter by scheme
@@ -984,11 +1131,12 @@ def complete_query(
         embedding_model_type=embedding_model
     )
     
-    # Retrieve relevant chunks with adaptive retrieval
+    # Retrieve relevant chunks with adaptive and hybrid retrieval
     retrieved_chunks = pipeline.query_documents(
         query=query,
         top_k=top_k,
         adaptive=adaptive,
+        hybrid=hybrid,
         year_filter=year,
         ministry_filter=ministry,
         scheme_filter=scheme
