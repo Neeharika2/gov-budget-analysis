@@ -532,21 +532,29 @@ class RAGPipeline:
     def query_documents(
         self,
         query: str,
-        top_k: int = 7,
+        top_k: int = 10,
+        adaptive: bool = True,
         year_filter: Optional[str] = None,
         ministry_filter: Optional[str] = None,
         scheme_filter: Optional[str] = None
     ) -> List[Dict]:
         """
-        Query the vector store for relevant documents.
+        Query the vector store for relevant documents with adaptive retrieval.
         
-        Uses 2-stage retrieval for speed:
+        Uses 2-stage retrieval with optional adaptive top_k:
         - Stage 1: Fast ANN recall (top 25 candidates, no LLM)
-        - Stage 2: Rerank + compress to top_k for answer generation
+        - Stage 2: Rerank + compress to adaptive top_k for answer generation
+        
+        Adaptive retrieval dynamically adjusts the number of chunks based on
+        query complexity, improving latency for simple queries and providing
+        more context for complex analysis queries.
         
         Args:
             query: User query string
-            top_k: Number of results after reranking (default: 7)
+            top_k: Maximum number of results after reranking (default: 10)
+                   This serves as an upper limit when adaptive=True
+            adaptive: Enable adaptive retrieval based on query complexity (default: True)
+                     If False, uses exact top_k value
             year_filter: Optional filter by year (e.g., "2023-24")
             ministry_filter: Optional filter by ministry name
             scheme_filter: Optional filter by scheme name
@@ -575,6 +583,19 @@ class RAGPipeline:
                 model_type=self.embedding_model_type
             )
         
+        # Adaptive retrieval: Adjust top_k based on query complexity
+        if adaptive:
+            from app.adaptive_retrieval import classify_query_complexity, explain_classification
+            adapted_top_k = classify_query_complexity(query, max_top_k=top_k)
+            
+            # Log adaptive decision for transparency
+            explanation = explain_classification(query, adapted_top_k, top_k)
+            print(f"🎯 Adaptive Retrieval: {adapted_top_k} chunks (max: {top_k})")
+            print(f"   {explanation}")
+        else:
+            adapted_top_k = top_k
+            print(f"Static Retrieval: {top_k} chunks (adaptive disabled)")
+        
         # Preprocess query for better matching
         processed_query = preprocess_query(query, year_filter)
         
@@ -602,7 +623,7 @@ class RAGPipeline:
                 where_filter["scheme"] = scheme_filter
         
         # Stage 1: Fast recall - retrieve more candidates for reranking
-        # Using 25 candidates is optimal: fast ANN lookup, then rerank to top_k
+        # Using 25 candidates is optimal: fast ANN lookup, then rerank to adapted_top_k
         retrieval_count = 25
         print(f"Stage 1: Fast recall - retrieving {retrieval_count} candidates...")
         
@@ -656,13 +677,15 @@ class RAGPipeline:
         
         # ---------------------------------------------------------
         # Stage 2: Rerank by content quality + expand with neighbors
+        # Use adapted_top_k (from adaptive retrieval or static)
         # ---------------------------------------------------------
-        print("Stage 2: Reranking by content quality...")
+        print(f"Stage 2: Reranking by content quality (target: {adapted_top_k} chunks)...")
         retrieved_chunks = rerank_chunks_by_content_quality(
             chunks=retrieved_chunks,
             query=query,
-            top_k=top_k
+            top_k=adapted_top_k  # Use adaptive value here
         )
+
 
         # ---------------------------------------------------------
         # Context Expansion: Fetch Neighbor Chunks (parallel batch fetch)
@@ -930,7 +953,8 @@ def query_rag(
 
 def complete_query(
     query: str,
-    top_k: int = 7,
+    top_k: int = 10,
+    adaptive: bool = True,
     year: Optional[str] = None,
     ministry: Optional[str] = None,
     scheme: Optional[str] = None,
@@ -939,11 +963,12 @@ def complete_query(
     temperature: float = 0.1
 ) -> Dict:
     """
-    Complete RAG query: retrieve chunks and generate answer.
+    Complete RAG query: retrieve chunks and generate answer with adaptive retrieval.
     
     Args:
         query: User query string
-        top_k: Number of chunks to retrieve
+        top_k: Maximum number of chunks to retrieve (default: 10)
+        adaptive: Enable adaptive retrieval based on query complexity (default: True)
         year: Optional filter by year
         ministry: Optional filter by ministry
         scheme: Optional filter by scheme
@@ -959,10 +984,11 @@ def complete_query(
         embedding_model_type=embedding_model
     )
     
-    # Retrieve relevant chunks
+    # Retrieve relevant chunks with adaptive retrieval
     retrieved_chunks = pipeline.query_documents(
         query=query,
         top_k=top_k,
+        adaptive=adaptive,
         year_filter=year,
         ministry_filter=ministry,
         scheme_filter=scheme
