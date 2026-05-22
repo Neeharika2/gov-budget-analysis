@@ -77,7 +77,21 @@ class QueryResponse(BaseModel):
 
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files if the directory exists; otherwise skip with a warning
+# Look for `static` in the project root (parent of app/) first, then in cwd.
+project_root = Path(__file__).resolve().parent.parent
+candidate_paths = [project_root / "static", Path("static")]
+static_dir = None
+for p in candidate_paths:
+    if p.exists():
+        static_dir = p
+        break
+
+if static_dir:
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    print(f"✓ Mounted static files from: {static_dir}")
+else:
+    print("⚠️  Warning: 'static' directory not found in project root or current working directory; skipping static file mount.")
 
 
 # API endpoints

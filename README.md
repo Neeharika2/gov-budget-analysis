@@ -16,6 +16,7 @@ Indian government budget documents contain critical information about public exp
 ### Why RAG?
 
 While Google or keyword search can locate specific terms, they cannot:
+
 - Synthesize multi-year trends from fragmented data
 - Answer comparative queries across schemes and ministries
 - Provide contextual, citation-backed answers
@@ -26,12 +27,14 @@ RAG combines vector-based semantic search with large language model reasoning to
 ### Scope
 
 This system focuses on:
+
 - **Document Type**: Union Budget of India (federal/central government)
 - **Focus Areas**: Infrastructure, roads, transport, capital expenditure
 - **Analysis Dimensions**: Sector-wise and scheme-wise spending breakdown
 - **Temporal Coverage**: Multi-year budget analysis (static dataset, no real-time updates)
 
 **Explicitly Out of Scope**:
+
 - Real-time budget data ingestion
 - Autonomous policy recommendations
 - State-level budgets (can be extended)
@@ -50,11 +53,13 @@ The system uses **only official, publicly available government PDFs**. No propri
 **Source**: [https://www.indiabudget.gov.in](https://www.indiabudget.gov.in)
 
 **Documents Used**:
+
 - Budget at a Glance
 - Expenditure Budget (Volume I & II)
 - Demand for Grants (selected ministries)
 
 **Focus Areas**:
+
 - Infrastructure and Roads
 - Capital Expenditure
 - National Development Schemes
@@ -65,6 +70,7 @@ The system uses **only official, publicly available government PDFs**. No propri
 **Source**: [https://www.niti.gov.in](https://www.niti.gov.in)
 
 **Documents Used**:
+
 - Infrastructure sector analysis reports
 - Public expenditure studies
 - Development scheme evaluations
@@ -72,10 +78,12 @@ The system uses **only official, publicly available government PDFs**. No propri
 #### 3. Ministry-Level Reports (Selected)
 
 **Ministries Included**:
+
 - Ministry of Road Transport & Highways
 - Ministry of Housing and Urban Affairs (infrastructure-related sections)
 
 **Document Types**:
+
 - Annual reports (infrastructure expenditure summaries)
 - Scheme performance reports
 
@@ -87,12 +95,12 @@ The system uses **only official, publicly available government PDFs**. No propri
 
 ### Dataset Characteristics
 
-| Attribute | Value |
-|-----------|-------|
-| Total PDFs | 20-25 |
-| Years Covered | 2020–2025 (approximate) |
-| Primary Focus | Infrastructure, Roads, CapEx |
-| Dataset Size | Intentionally kept small for clean RAG performance |
+| Attribute     | Value                                              |
+| ------------- | -------------------------------------------------- |
+| Total PDFs    | 20-25                                              |
+| Years Covered | 2020–2025 (approximate)                           |
+| Primary Focus | Infrastructure, Roads, CapEx                       |
+| Dataset Size  | Intentionally kept small for clean RAG performance |
 
 **Rationale for Limited Dataset**: A focused, high-quality dataset ensures accurate retrieval and reduces noise. The architecture is designed to scale to hundreds of documents.
 
@@ -131,16 +139,15 @@ Response Formatting (Natural Language + Tables + Citations)
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| **Language** | Python 3.10+ |
-| **RAG Framework** | LlamaIndex |
-| **LLM** | Gemini-2.5-Flash (Google) |
-| **Embeddings** | LlamaIndex (HuggingFace compatible model) |
-| **Vector Database** | ChromaDB |
-| **PDF Parsing** | PyMuPDF (fitz) or pdfplumber |
-| **Backend API** | FastAPI (minimal REST endpoints) |
-
+| Component                 | Technology                                |
+| ------------------------- | ----------------------------------------- |
+| **Language**        | Python 3.10+                              |
+| **RAG Framework**   | LlamaIndex                                |
+| **LLM**             | Gemini-2.5-Flash (Google)                 |
+| **Embeddings**      | LlamaIndex (HuggingFace compatible model) |
+| **Vector Database** | ChromaDB                                  |
+| **PDF Parsing**     | PyMuPDF (fitz) or pdfplumber              |
+| **Backend API**     | FastAPI (minimal REST endpoints)          |
 
 ---
 
@@ -232,14 +239,14 @@ DOCUMENT_METADATA = {
 
 ### Metadata Schema
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `year` | string | Yes | Budget year (e.g., "2023-24") |
-| `ministry` | string | Yes | Ministry name |
-| `scheme` | string | Yes | Scheme name (use "General" if not specific) |
-| `budget_category` | string | Yes | Category (e.g., "Expenditure Budget") |
-| `state` | string | Yes | "Central" or state name |
-| `document_type` | string | Yes | Document type |
+| Field               | Type   | Required | Description                                 |
+| ------------------- | ------ | -------- | ------------------------------------------- |
+| `year`            | string | Yes      | Budget year (e.g., "2023-24")               |
+| `ministry`        | string | Yes      | Ministry name                               |
+| `scheme`          | string | Yes      | Scheme name (use "General" if not specific) |
+| `budget_category` | string | Yes      | Category (e.g., "Expenditure Budget")       |
+| `state`           | string | Yes      | "Central" or state name                     |
+| `document_type`   | string | Yes      | Document type                               |
 
 > **Important:** If a PDF is not configured in `DOCUMENT_METADATA`, default values will be used and a warning will be logged during indexing.
 
@@ -281,15 +288,15 @@ govinsight/
 
 ## Features Implemented
 
-| Feature | Description |
-|---------|-------------|
-| **Natural Language Queries** | Ask questions in plain English about budget allocations |
-| **Year-wise Breakdown** | Retrieve spending data across multiple budget years |
-| **Scheme-wise Analysis** | Compare allocations for specific schemes (e.g., Bharatmala, PMGSY) |
-| **Infrastructure Focus** | Specialized retrieval for roads, transport, and capital expenditure |
-| **Citation-backed Answers** | Every answer includes source document and page number |
-| **Missing Data Handling** | Gracefully returns "data not found" when information is unavailable |
-| **Metadata Filtering** | Filter results by year, ministry, or scheme |
+| Feature                            | Description                                                         |
+| ---------------------------------- | ------------------------------------------------------------------- |
+| **Natural Language Queries** | Ask questions in plain English about budget allocations             |
+| **Year-wise Breakdown**      | Retrieve spending data across multiple budget years                 |
+| **Scheme-wise Analysis**     | Compare allocations for specific schemes (e.g., Bharatmala, PMGSY)  |
+| **Infrastructure Focus**     | Specialized retrieval for roads, transport, and capital expenditure |
+| **Citation-backed Answers**  | Every answer includes source document and page number               |
+| **Missing Data Handling**    | Gracefully returns "data not found" when information is unavailable |
+| **Metadata Filtering**       | Filter results by year, ministry, or scheme                         |
 
 ### Non-Features (Honest Scope)
 
@@ -302,14 +309,14 @@ govinsight/
 
 ## Example Queries
 
-| Query | Expected Output |
-|-------|-----------------|
+| Query                                                                      | Expected Output                                    |
+| -------------------------------------------------------------------------- | -------------------------------------------------- |
 | "How much did India allocate for road infrastructure in the last 5 years?" | Year-wise table with MoRTH allocations + citations |
-| "Capital expenditure trend in Union Budget" | Multi-year CapEx breakdown|
-| "Which year had the highest transport budget allocation?" | Single year + amount + source citation |
-| "Compare Bharatmala and PMGSY allocations in 2023-24" | Scheme-wise comparison table |
-| "Total infrastructure spending in Budget 2024-25" | Aggregated value + sector breakdown |
-| "Ministry of Road Transport & Highways budget breakdown" | Scheme-wise allocations for MoRTH |
+| "Capital expenditure trend in Union Budget"                                | Multi-year CapEx breakdown                         |
+| "Which year had the highest transport budget allocation?"                  | Single year + amount + source citation             |
+| "Compare Bharatmala and PMGSY allocations in 2023-24"                      | Scheme-wise comparison table                       |
+| "Total infrastructure spending in Budget 2024-25"                          | Aggregated value + sector breakdown                |
+| "Ministry of Road Transport & Highways budget breakdown"                   | Scheme-wise allocations for MoRTH                  |
 
 ---
 
@@ -359,6 +366,7 @@ python app/rag_pipeline.py --index
 ```
 
 **Expected Output**:
+
 ```
 Indexing 15 PDFs...
 Extracted 1,247 chunks
@@ -371,6 +379,8 @@ Indexing complete.
 
 ```bash
 uvicorn app.main:app --reload
+(or)
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 **Server starts at**: `http://localhost:8000`
@@ -378,6 +388,7 @@ uvicorn app.main:app --reload
 ### Step 8: Query the System
 
 **Via API**:
+
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
@@ -385,6 +396,7 @@ curl -X POST http://localhost:8000/query \
 ```
 
 **Via Python Script**:
+
 ```python
 from app.rag_pipeline import query_rag
 
@@ -405,23 +417,28 @@ print(result)
 ### Known Limitations
 
 #### 1. PDF Quality Dependency
+
 - Some budget PDFs contain scanned tables or low-quality text
 - OCR-based PDFs may have character recognition errors
 - Tabular data extraction is format-dependent
 
 #### 2. Scheme Name Inconsistencies
+
 - Government schemes are renamed or merged across years (e.g., PMGSY I → PMGSY II)
 - The system may not automatically detect scheme relationships without explicit metadata
 
 #### 3. Static Dataset
+
 - Data is not updated in real-time from government websites
 - Requires manual re-indexing when new budgets are published
 
 #### 4. Aggregation Accuracy
+
 - Multi-year aggregations depend on consistent categorization in source PDFs
 - Manual validation recommended for critical financial analysis
 
 #### 5. LLM Hallucination Risk
+
 - While citation requirements reduce hallucination, LLM may occasionally misinterpret ambiguous text
 - Cross-reference with source PDFs for critical use cases
 
@@ -451,6 +468,7 @@ GovInsight demonstrates how Retrieval-Augmented Generation can make complex gove
 ### Scalability Path
 
 The current architecture supports:
+
 - Expansion to 100+ documents without re-architecture
 - Addition of state budgets and ministry-specific reports
 - Integration with parliamentary Q&A archives
